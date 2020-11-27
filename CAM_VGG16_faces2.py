@@ -3,7 +3,7 @@ from keras.models import load_model, Model
 from keras.layers import Input, Dense, Dropout, Activation, Flatten
 from keras.layers import Convolution2D, MaxPooling2D, GlobalAveragePooling2D
 from keras.layers.normalization import BatchNormalization
-from keras.applications import ResNet50, VGG16, InceptionV3
+from keras.applications import VGG16, InceptionV3
 from keras.applications.vgg16 import preprocess_input, decode_predictions
 
 import os  #APIs
@@ -106,25 +106,37 @@ label_test = label_test.tolist()
 #np.random.shuffle(index)
 #data = data[index]
 #label = label[index]
-
+nb_class = 2
 #create model (conv in VGG16 + GAP + dropout + Dense)
-base_model = VGG16(include_top = False, weights = 'imagenet')
-for layer in base_model.layers:
-    layer.trainable = False #transfer learning (512+1)
-GAP_layer = GlobalAveragePooling2D()(base_model.output)
-drop = Dropout(0.25)(GAP_layer)
-#flatten = Flatten()(drop)
-y = Dense(2, activation='softmax')(drop)
-model = Model(inputs = base_model.input, outputs = y)
+def creat_model(n_class):
+    base_model = VGG16(include_top = False, weights = 'imagenet')
+    x = base_model.output
+    #for layer in base_model.layers:
+        #layer.trainable = False #transfer learning (512+1)
+    x = GlobalAveragePooling2D()(x)#GAP_layer
+    x = BatchNormalization(axis=1)(x)#BN
+    #x = Dropout(0.5)(x)
+    y = Dense(n_class, activation='softmax')(x)#drop
+    model = Model(inputs = base_model.input, outputs = y)
+    return model, base_model
+model, base_model = creat_model(nb_class)
+
+
+for layer in model.layers:
+    layer.trainable = False
+model.layers[-1].trainable = True
+model.layers[-2].trainable = True
+model.layers[-3].trainable = True
+
 model.summary()
-model.compile(optimizer='adadelta', loss='categorical_crossentropy', metrics=['accuracy'])
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])#adadelta
 #model.fit(x = data_train, y = label_train, validation_data=(data_val, label_val), batch_size=5, epochs=1)
 
 # train model (conv can not be trained, so just depend on 513 weights)
 
-label_train = np_utils.to_categorical(label_train,num_classes=2)#one-hot
-label_val = np_utils.to_categorical(label_val, num_classes=2)
-model.fit(x = data_train, y = label_train, batch_size=32, epochs=1, validation_data=(data_val, label_val))
+label_train = np_utils.to_categorical(label_train,num_classes=nb_class)#one-hot
+label_val = np_utils.to_categorical(label_val, num_classes=nb_class)
+model.fit(x = data_train, y = label_train, batch_size=32, epochs=10, validation_data=(data_val, label_val))
 weight_softmax = model.layers[-1].get_weights()[0]
 
 #weights
@@ -137,10 +149,11 @@ out_base = out_base[0]
 print(out_base.shape)
 #(7,7,512)
 
+from scipy.special import expit
 def predict_on_weights(out_base, weights):
     gap = np.average(out_base, axis=(0,1))
     logit = np.dot(gap, np.squeeze(weights))
-    return 1 / (1 + np.e ** (-logit))
+    return expit(logit)#1 / (1 + np.e ** (-logit))
 
 
 def save_img(img, file_name, file_path):
@@ -180,7 +193,7 @@ def getCAM(img, feature_maps, weights, class_idx, display = False):
         weight = weights[:,idx].reshape(w,1)
         predict = predict_on_weights(feature_maps, weight)
         # weighted feature map
-        cam = np.matmul(feature_maps, weight)
+        cam = np.matmul(feature_maps, weight) * (predict - 0.5)#predict using sigmoid to classify thresold = 0.5
         # Normalize
         cam = (cam - cam.min()) / (cam.max() - cam.min())
         # Resize as image size
@@ -219,7 +232,7 @@ def all_CAM(weights):
         src = data_test[idx][:,:,::-1]
         out_base = base_model.predict(np.expand_dims(src, axis=0))
         out_base = out_base[0]
-        out= getCAM(img=src, feature_maps=out_base, weights = weights, class_idx=2)
+        out= getCAM(img=src, feature_maps=out_base, weights = weights, class_idx = nb_class)
         save_img(img = out, file_name= i, file_path=results_output_path)
         idx += 1
     return None
